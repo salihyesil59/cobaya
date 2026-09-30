@@ -51,6 +51,7 @@ version = { attr = "cobaya.__version__" }
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml", "*.bibtex"]
+"cobaya.likelihoods.cc" = ["data/*.dat"]
 
 [project.scripts]
 cobaya = "cobaya.__main__:run_command"
