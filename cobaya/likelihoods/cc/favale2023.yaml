@@ -1,0 +1,16 @@
+# Cosmic chronometers H(z) compilation of Favale, Gomez-Valent & Migliaccio (2023),
+# MNRAS 523, 3406, Table 1 (32 measurements; original references in the data file).
+
+# Measurements: z, H(z), tabulated error [km/s/Mpc]
+data_file: favale2023_data.txt
+# Covariance matrix: REQUIRED choice, the one of the paper is not public. One of
+#  file: the matrix in covmat_file (preferred, e.g. from the authors)
+#  moresco2020: tabulated errors + IMF and SPS systematics of Moresco et al. (2020),
+#     as described in the paper (may count the SPS systematic twice for the 15
+#     Moresco et al. points; needs `cobaya-install cc.moresco2020`)
+#  uncorrelated: tabulated errors only
+covariance: null
+# Covariance matrix file [(km/s/Mpc)^2], for covariance: file
+covmat_file: null
+# Speed in evaluations/second
+speed: 5000

@@ -235,3 +235,50 @@ def test_cc_minimal_subclass(tmp_path):
     H = 70.0 * np.sqrt(0.3 * (1 + np.array([0.5, 1.5])) ** 3 + 0.7)
     expected = -0.5 * np.sum(((np.array([90.0, 170.0]) - H) / [10.0, 20.0]) ** 2)
     assert model.loglike({}, return_derived=False) == pytest.approx(expected)
+
+
+def _favale_loglike(options, packages_path=None, point=(70.0, 0.3)):
+    model = get_model(
+        {
+            "likelihood": {"cc.favale2023": options},
+            "theory": {"hubble": FlatLCDMHubble},
+            "params": {"H0": point[0], "Omega_m": point[1]},
+            "packages_path": packages_path,
+        }
+    )
+    return model.loglike({}, return_derived=False)
+
+
+def test_cc_favale2023(tmp_path, packages_path, skip_not_installed):
+    from cobaya.likelihoods.cc.favale2023 import favale2023
+
+    z, H, sigma = np.genfromtxt(
+        os.path.join(favale2023.get_class_path(), "favale2023_data.txt"),
+        delimiter=",",
+        usecols=(0, 1, 2),
+    ).T
+    assert len(z) == 32 and z[0] == 0.07 and z[-1] == 1.965
+    residual = H - 70.0 * np.sqrt(0.3 * (1 + z) ** 3 + 0.7)
+    # The covariance must be chosen explicitly
+    with pytest.raises(LoggedError, match="covariance"):
+        _favale_loglike(None)
+    expected = -0.5 * np.sum((residual / sigma) ** 2)
+    assert _favale_loglike({"covariance": "uncorrelated"}) == pytest.approx(expected)
+    with pytest.raises(LoggedError, match="covmat_file"):
+        _favale_loglike({"covariance": "file"})
+    cov = np.diag(sigma**2) + 0.2 * np.outer(sigma, sigma) * (1 - np.eye(len(z)))
+    np.savetxt(tmp_path / "cov.txt", cov)
+    assert _favale_loglike(
+        {"covariance": "file", "covmat_file": str(tmp_path / "cov.txt")}
+    ) == pytest.approx(-0.5 * residual @ np.linalg.solve(cov, residual))
+    # Moresco et al. (2020) systematics, from the cc.moresco2020 data
+    packages_path = process_packages_path(packages_path)
+    install_test_wrapper(skip_not_installed, _cc_loglike, None, packages_path)
+    systematics = np.loadtxt(cc_data_path("data_MM20.dat", packages_path))
+    cov = np.diag(sigma**2)
+    for column in (1, 4):  # IMF, mod_ooo
+        error = H * np.interp(z, systematics[:, 0], systematics[:, column]) / 100
+        cov += np.outer(error, error)
+    assert _favale_loglike({"covariance": "moresco2020"}, packages_path) == pytest.approx(
+        -0.5 * residual @ np.linalg.solve(cov, residual)
+    )
