@@ -878,6 +878,16 @@ like_H0: InfoDict = {
     },
 }
 
+like_cc: InfoDict = {
+    none: {},
+    "CC_moresco2020": {
+        "desc": "Cosmic chronometers H(z) from Moresco et al., with systematics "
+        "covariance (Moresco et al. 2020)",
+        "theory": theory,
+        "likelihood": {"cc.moresco2020": None},
+    },
+}
+
 # SAMPLERS ###############################################################################
 
 sampler: InfoDict = {
@@ -1136,6 +1146,7 @@ _combo_dict_text = (
             ["like_des", "DES measurements"],
             ["like_sn", "SN experiments"],
             ["like_H0", "Local H0 measurements"],
+            ["like_cc", "Cosmic chronometers"],
         ),
     ],
     ["Sampler", (["sampler", "Samplers"],)],

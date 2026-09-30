@@ -5,12 +5,16 @@
 
 # Measurements: z, H(z), uncorrelated error [km/s/Mpc]
 data_file: data/HzTable_MM_BC03.dat
+# Covariance matrix of the measurements [(km/s/Mpc)^2], used instead of the
+# errors in data_file if given
+covmat_file: null
 # Fractional systematic errors [%] per component, as a function of redshift
 systematics_file: data/data_MM20.dat
 # Systematic components included in the covariance matrix, fully correlated across
 # redshift (initial mass function and stellar population synthesis model).
 # The other columns of systematics_file are further components (see Moresco et al. 2020).
-# Set to [] to use only the uncorrelated errors.
+# Set to [] to use only the uncorrelated errors, or if your own data already
+# include the systematics.
 systematics: [IMF, mod_ooo]
 # Speed in evaluations/second
 speed: 5000

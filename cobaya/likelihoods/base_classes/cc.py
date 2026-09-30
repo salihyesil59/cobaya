@@ -25,14 +25,35 @@ This is the construction of the public `CCcovariance
 <https://gitlab.com/mmoresco/CCcovariance>`_ repository by M. Moresco, from which the
 data files of ``cc.moresco2020`` are taken unmodified.
 
-Using a different set of measurements
--------------------------------------
+Using your own measurements
+---------------------------
 
-To use a different set of :math:`H(z)` measurements, create a class inheriting from
-:class:`cc.CC`, with a ``.yaml`` file setting ``data_file`` to a text file whose first
-three columns are :math:`z`, :math:`H(z)` and its uncorrelated error, in km/s/Mpc
-(comma- or space-separated). Relative paths are understood with respect to the folder
-of the likelihood class. Set ``systematics: []`` to use only the uncorrelated errors.
+The measurements can be replaced with the ``data_file`` option: a text file (comma- or
+space-separated, ``#`` for comments) whose columns are :math:`z`, :math:`H(z)` and its
+uncorrelated error, in km/s/Mpc. If the measurements come with their own covariance
+matrix, pass it (in (km/s/Mpc)\ :sup:`2`, one row per line) with ``covmat_file``; it is
+then used instead of the errors in the third column, which can be omitted.
+
+.. code:: yaml
+
+   likelihood:
+     cc.moresco2020:
+       data_file: my_cc_data.txt
+       covmat_file: my_cc_covmat.txt  # optional
+       systematics: []
+
+Relative paths that you pass are understood with respect to the current working
+directory (the defaults of a likelihood class, with respect to the folder of the class).
+
+.. warning::
+
+   The systematic terms listed in ``systematics`` are *added* to the errors (or to the
+   covariance matrix) of the data. If the errors of your measurements already include
+   the systematics of the method, as is the case for many published covariance
+   matrices, set ``systematics: []`` so that they are not counted twice.
+
+To make a set of measurements available by name, create a class inheriting from
+:class:`cc.CC` with a ``.yaml`` file setting these options, as ``cc.moresco2020`` does.
 """
 
 import os
@@ -49,16 +70,48 @@ class CC(Likelihood):
 
     # variables from yaml
     data_file: str
-    systematics_file: str
-    systematics: list[str]
+    covmat_file: str | None = None
+    systematics_file: str | None = None
+    systematics: list[str] = []
 
     def initialize(self):
-        self.z, self.H_data, sigma = self._load_table(self.data_file, (0, 1, 2)).T
-        self.cov = np.diag(sigma**2)
+        data = self._load_table("data_file")
+        self.z, self.H_data = data[:, 0], data[:, 1]
+        if self.covmat_file:
+            self.cov = self._load_table("covmat_file")
+            if self.cov.shape != (len(self.z), len(self.z)):
+                raise LoggedError(
+                    self.log,
+                    "The covariance matrix in '%s' has shape %r, but there are %d "
+                    "measurements.",
+                    self.covmat_file,
+                    self.cov.shape,
+                    len(self.z),
+                )
+            if not np.allclose(self.cov, self.cov.T):
+                raise LoggedError(
+                    self.log,
+                    "The covariance matrix in '%s' is not symmetric.",
+                    self.covmat_file,
+                )
+        else:
+            if data.shape[1] < 3:
+                raise LoggedError(
+                    self.log,
+                    "No errors (3rd column) in '%s', and no covmat_file given.",
+                    self.data_file,
+                )
+            self.cov = np.diag(data[:, 2] ** 2)
         if self.systematics:
-            with open(self._path(self.systematics_file)) as f:
+            if not self._is_default("data_file") or self.covmat_file:
+                self.log.info(
+                    "Adding the systematic terms %r to the errors of the data. If these "
+                    "already include them, set 'systematics: []'.",
+                    self.systematics,
+                )
+            with open(self._path("systematics_file")) as f:
                 columns = f.readline().lstrip("#").split()
-            table = self._load_table(self.systematics_file)
+            table = self._load_table("systematics_file")
             for name in self.systematics:
                 if name not in columns[1:]:
                     raise LoggedError(
@@ -70,28 +123,50 @@ class CC(Likelihood):
                 fractional = np.interp(
                     self.z, table[:, 0], table[:, columns.index(name)] / 100
                 )
-                self.cov += np.outer(self.H_data * fractional, self.H_data * fractional)
+                self.cov = self.cov + np.outer(
+                    self.H_data * fractional, self.H_data * fractional
+                )
         self.invcov = np.linalg.inv(self.cov)
 
-    def _path(self, filename):
-        return os.path.join(self.get_class_path(), filename)
+    def _is_default(self, option):
+        return getattr(self, option) == self.get_defaults().get(option)
 
-    def _load_table(self, filename, usecols=None):
-        path = self._path(filename)
+    def _path(self, option):
+        """
+        Full path of a file given by ``option``: relative to the folder of the class if
+        it is the class default, and to the current working directory otherwise.
+        """
+        filename = getattr(self, option)
+        if os.path.isabs(filename):
+            return filename
+        if self._is_default(option):
+            return os.path.join(self.get_class_path(), filename)
+        return os.path.abspath(filename)
+
+    def _load_table(self, option):
+        path = self._path(option)
         try:
             with open(path) as f:
-                first_data_line = next(line for line in f if not line.startswith("#"))
+                first_data_line = next(
+                    line for line in f if line.strip() and not line.startswith("#")
+                )
+            delimiter = "," if "," in first_data_line else None
+            # the first numerical columns (e.g. ignoring a reference string at the end)
+            n_numeric = 0
+            for value in first_data_line.split(delimiter):
+                try:
+                    float(value)
+                except ValueError:
+                    break
+                n_numeric += 1
             return np.atleast_2d(
                 np.loadtxt(
-                    path,
-                    comments="#",
-                    delimiter="," if "," in first_data_line else None,
-                    usecols=usecols,
+                    path, comments="#", delimiter=delimiter, usecols=range(n_numeric)
                 )
             )
         except (OSError, StopIteration, ValueError) as excpt:
             raise LoggedError(
-                self.log, "Could not read data file '%s': %s", path, excpt
+                self.log, "Could not read file '%s' (%s): %s", path, option, excpt
             ) from excpt
 
     def get_requirements(self):

@@ -6,6 +6,8 @@ recipe it implements, and checks that it is consistent across Boltzmann codes.
 import numpy as np
 import pytest
 
+from cobaya.cosmo_input import create_input, planck_base_model
+from cobaya.log import LoggedError
 from cobaya.model import get_model
 from cobaya.theory import Theory
 
@@ -119,3 +121,82 @@ def cc_data_path(filename):
     import cobaya.likelihoods.cc
 
     return os.path.join(os.path.dirname(cobaya.likelihoods.cc.__file__), "data", filename)
+
+
+def _cc_loglike(options, point=(70.0, 0.3)):
+    model = get_model(
+        {
+            "likelihood": {"cc.moresco2020": options},
+            "theory": {"hubble": FlatLCDMHubble},
+            "params": {
+                "H0": {"prior": {"min": 50, "max": 100}},
+                "Omega_m": {"prior": {"min": 0.01, "max": 0.99}},
+            },
+        }
+    )
+    return model.loglike(list(point), return_derived=False)
+
+
+def test_cc_own_data_and_covmat(tmp_path, monkeypatch):
+    # User files, with paths relative to the working directory
+    monkeypatch.chdir(tmp_path)
+    z, H, sigma = np.genfromtxt(
+        cc_data_path("HzTable_MM_BC03.dat"), delimiter=",", usecols=(0, 1, 2)
+    ).T
+    np.savetxt("my_data.txt", np.array([z, H, sigma]).T, header="z H sigma")
+    np.savetxt("my_data_no_errors.txt", np.array([z, H]).T)
+    np.savetxt("my_covmat.txt", np.diag(sigma**2))
+    reference = _cc_loglike(None)
+    reference_no_sys = _cc_loglike({"systematics": []})
+    assert _cc_loglike({"data_file": "my_data.txt"}) == pytest.approx(reference)
+    assert _cc_loglike(
+        {"data_file": "my_data_no_errors.txt", "covmat_file": "my_covmat.txt"}
+    ) == pytest.approx(reference)
+    assert _cc_loglike(
+        {"data_file": "my_data.txt", "covmat_file": "my_covmat.txt", "systematics": []}
+    ) == pytest.approx(reference_no_sys)
+    # A full covariance matrix is used as given
+    cov = np.diag(sigma**2) + 0.3 * np.outer(sigma, sigma) * (1 - np.eye(len(z)))
+    np.savetxt("my_full_covmat.txt", cov)
+    H0, Omega_m = 70.0, 0.3
+    residual = H - H0 * np.sqrt(Omega_m * (1 + z) ** 3 + 1 - Omega_m)
+    assert _cc_loglike(
+        {
+            "data_file": "my_data.txt",
+            "covmat_file": "my_full_covmat.txt",
+            "systematics": [],
+        }
+    ) == pytest.approx(-0.5 * residual @ np.linalg.solve(cov, residual))
+    # Covariance matrix not matching the data
+    np.savetxt("wrong_covmat.txt", np.diag(sigma[:-1] ** 2))
+    with pytest.raises(LoggedError, match="shape"):
+        _cc_loglike({"data_file": "my_data.txt", "covmat_file": "wrong_covmat.txt"})
+
+
+def test_cc_cosmo_generator():
+    info = create_input(theory="camb", like_cc="CC_moresco2020", **planck_base_model)
+    assert "cc.moresco2020" in info["likelihood"]
+
+
+def test_cc_minimal_subclass(tmp_path):
+    # A new set of measurements only needs a data file: no systematics or covariance
+    # matrix by default
+    from cobaya.likelihoods.base_classes import CC
+
+    data_file = tmp_path / "data.txt"
+    np.savetxt(data_file, [[0.5, 90.0, 10.0], [1.5, 170.0, 20.0]])
+
+    class MinimalCC(CC):
+        pass
+
+    MinimalCC.data_file = str(data_file)
+    model = get_model(
+        {
+            "likelihood": {"minimal": MinimalCC},
+            "theory": {"hubble": FlatLCDMHubble},
+            "params": {"H0": 70.0, "Omega_m": 0.3},
+        }
+    )
+    H = 70.0 * np.sqrt(0.3 * (1 + np.array([0.5, 1.5])) ** 3 + 0.7)
+    expected = -0.5 * np.sum(((np.array([90.0, 170.0]) - H) / [10.0, 20.0]) ** 2)
+    assert model.loglike({}, return_derived=False) == pytest.approx(expected)
