@@ -1117,6 +1117,7 @@ install_tests["likelihood"].update(
         "planck_2018_highl_CamSpec.TT": None,
         "planck_2018_highl_CamSpec2021.TT": None,
         "bicep_keck_2018": None,
+        "cc.moresco2020": None,
     }
 )
 

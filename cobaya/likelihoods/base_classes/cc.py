@@ -22,8 +22,9 @@ linearly interpolated in redshift from the table of Moresco et al. (2020), and h
 the values at the ends of the table beyond it.
 
 This is the construction of the public `CCcovariance
-<https://gitlab.com/mmoresco/CCcovariance>`_ repository by M. Moresco, from which the
-data files of ``cc.moresco2020`` are taken unmodified.
+<https://gitlab.com/mmoresco/CCcovariance>`_ repository by M. Moresco. The data files of
+``cc.moresco2020`` are downloaded from that repository (at a fixed commit) when
+installing the likelihood with ``cobaya-install cc.moresco2020``.
 
 Using your own measurements
 ---------------------------
@@ -43,7 +44,8 @@ then used instead of the errors in the third column, which can be omitted.
        systematics: []
 
 Relative paths that you pass are understood with respect to the current working
-directory (the defaults of a likelihood class, with respect to the folder of the class).
+directory (the defaults of a likelihood class, with respect to the folder of its
+installed data, or of the class if it has no data to install).
 
 .. warning::
 
@@ -60,21 +62,30 @@ import os
 
 import numpy as np
 
-from cobaya.likelihood import Likelihood
+from cobaya.likelihoods.base_classes.InstallableLikelihood import InstallableLikelihood
 from cobaya.log import LoggedError
 
 
-class CC(Likelihood):
+class CC(InstallableLikelihood):
     # Data type for aggregated chi2 (case sensitive)
     type = "CC"
 
     # variables from yaml
+    path: str | None = None
     data_file: str
     covmat_file: str | None = None
     systematics_file: str | None = None
     systematics: list[str] = []
 
     def initialize(self):
+        # Folder of the default data files: `path` if given, else the installation
+        # folder (for classes with data to install), else the folder of the class
+        if self.path:
+            self._data_folder = self.path
+        elif self.get_install_options() and self.packages_path:
+            self._data_folder = self.get_path(self.packages_path)
+        else:
+            self._data_folder = self.get_class_path()
         data = self._load_table("data_file")
         self.z, self.H_data = data[:, 0], data[:, 1]
         if self.covmat_file:
@@ -133,14 +144,15 @@ class CC(Likelihood):
 
     def _path(self, option):
         """
-        Full path of a file given by ``option``: relative to the folder of the class if
-        it is the class default, and to the current working directory otherwise.
+        Full path of a file given by ``option``: relative to the data folder (see
+        ``initialize``) if it is the class default, and to the current working directory
+        otherwise.
         """
         filename = getattr(self, option)
         if os.path.isabs(filename):
             return filename
         if self._is_default(option):
-            return os.path.join(self.get_class_path(), filename)
+            return os.path.join(self._data_folder, filename)
         return os.path.abspath(filename)
 
     def _load_table(self, option):

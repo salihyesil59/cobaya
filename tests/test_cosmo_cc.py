@@ -3,6 +3,8 @@ Tests the cosmic chronometers likelihood against the published fit of the covari
 recipe it implements, and checks that it is consistent across Boltzmann codes.
 """
 
+import os
+
 import numpy as np
 import pytest
 
@@ -33,13 +35,15 @@ class FlatLCDMHubble(Theory):
         return self.current_state["H0"] * np.sqrt(Omega_m * (1 + z) ** 3 + 1 - Omega_m)
 
 
-def _H0_quantiles(systematics):
+def _H0_quantiles(systematics, packages_path, skip_not_installed):
     """
     Integrates the posterior of the reference fit (flat priors 50 < H0 < 100,
     0.01 < Omega_m < 0.99) on a grid, returning the median of H0 and the distances to
     the 16% and 84% quantiles.
     """
-    model = get_model(
+    model = install_test_wrapper(
+        skip_not_installed,
+        get_model,
         {
             "likelihood": {"cc.moresco2020": {"systematics": systematics}},
             "theory": {"hubble": FlatLCDMHubble},
@@ -47,7 +51,8 @@ def _H0_quantiles(systematics):
                 "H0": {"prior": {"min": 50, "max": 100}},
                 "Omega_m": {"prior": {"min": 0.01, "max": 0.99}},
             },
-        }
+            "packages_path": process_packages_path(packages_path),
+        },
     )
     H0s = np.linspace(50, 100, 201)
     Omega_ms = np.linspace(0.01, 0.99, 99)
@@ -61,25 +66,43 @@ def _H0_quantiles(systematics):
     return median, high - median, median - low
 
 
-def test_cc_moresco2020_reproduces_published_fit():
+def test_cc_moresco2020_reproduces_published_fit(packages_path, skip_not_installed):
     # Flat LCDM fit to the same data, with and without the systematics, from the
     # CC_fit.ipynb notebook of https://gitlab.com/mmoresco/CCcovariance, where the
     # data and systematics files come from. That is an emcee run, so it carries
     # sampling noise of a few hundredths of km/s/Mpc.
     assert np.allclose(
-        _H0_quantiles(["IMF", "mod_ooo"]), [65.995, 5.545, 5.591], atol=0.1
+        _H0_quantiles(["IMF", "mod_ooo"], packages_path, skip_not_installed),
+        [65.995, 5.545, 5.591],
+        atol=0.1,
     )
-    assert np.allclose(_H0_quantiles([]), [66.171, 3.770, 3.956], atol=0.1)
+    assert np.allclose(
+        _H0_quantiles([], packages_path, skip_not_installed),
+        [66.171, 3.770, 3.956],
+        atol=0.1,
+    )
 
 
 def test_cc_moresco2020_boltzmann(packages_path, skip_not_installed):
     # Same chi2 from CAMB and CLASS at a Planck-like cosmology, and equal to the one
     # computed directly from their H(z) with the covariance recipe
+    install_test_wrapper(
+        skip_not_installed,
+        get_model,
+        {
+            "likelihood": {"cc.moresco2020": None},
+            "theory": {"hubble": FlatLCDMHubble},
+            "params": {"H0": 70.0, "Omega_m": 0.3},
+            "packages_path": process_packages_path(packages_path),
+        },
+    )
     data = np.genfromtxt(
-        cc_data_path("HzTable_MM_BC03.dat"), delimiter=",", usecols=(0, 1, 2)
+        cc_data_path("HzTable_MM_BC03.dat", packages_path),
+        delimiter=",",
+        usecols=(0, 1, 2),
     )
     z, H, sigma = data.T
-    systematics = np.loadtxt(cc_data_path("data_MM20.dat"))
+    systematics = np.loadtxt(cc_data_path("data_MM20.dat", packages_path))
     cov = np.diag(sigma**2)
     for column in (1, 4):  # IMF, mod_ooo
         error = H * np.interp(z, systematics[:, 0], systematics[:, column]) / 100
@@ -115,15 +138,18 @@ def test_cc_moresco2020_boltzmann(packages_path, skip_not_installed):
     assert chi2s[0] < 2 * len(z)
 
 
-def cc_data_path(filename):
-    import os
+def cc_data_path(filename, packages_path):
+    from cobaya.likelihoods.cc.moresco2020 import _commit, moresco2020
 
-    import cobaya.likelihoods.cc
+    return os.path.join(
+        moresco2020.get_path(process_packages_path(packages_path)),
+        f"CCcovariance-{_commit}",
+        "data",
+        filename,
+    )
 
-    return os.path.join(os.path.dirname(cobaya.likelihoods.cc.__file__), "data", filename)
 
-
-def _cc_loglike(options, point=(70.0, 0.3)):
+def _cc_loglike(options, packages_path, point=(70.0, 0.3)):
     model = get_model(
         {
             "likelihood": {"cc.moresco2020": options},
@@ -132,27 +158,36 @@ def _cc_loglike(options, point=(70.0, 0.3)):
                 "H0": {"prior": {"min": 50, "max": 100}},
                 "Omega_m": {"prior": {"min": 0.01, "max": 0.99}},
             },
+            "packages_path": process_packages_path(packages_path),
         }
     )
     return model.loglike(list(point), return_derived=False)
 
 
-def test_cc_own_data_and_covmat(tmp_path, monkeypatch):
+def test_cc_own_data_and_covmat(tmp_path, monkeypatch, packages_path, skip_not_installed):
+    packages_path = process_packages_path(packages_path)
+
+    def loglike(options):
+        return _cc_loglike(options, packages_path)
+
+    install_test_wrapper(skip_not_installed, loglike, None)
     # User files, with paths relative to the working directory
     monkeypatch.chdir(tmp_path)
     z, H, sigma = np.genfromtxt(
-        cc_data_path("HzTable_MM_BC03.dat"), delimiter=",", usecols=(0, 1, 2)
+        cc_data_path("HzTable_MM_BC03.dat", packages_path),
+        delimiter=",",
+        usecols=(0, 1, 2),
     ).T
     np.savetxt("my_data.txt", np.array([z, H, sigma]).T, header="z H sigma")
     np.savetxt("my_data_no_errors.txt", np.array([z, H]).T)
     np.savetxt("my_covmat.txt", np.diag(sigma**2))
-    reference = _cc_loglike(None)
-    reference_no_sys = _cc_loglike({"systematics": []})
-    assert _cc_loglike({"data_file": "my_data.txt"}) == pytest.approx(reference)
-    assert _cc_loglike(
+    reference = loglike(None)
+    reference_no_sys = loglike({"systematics": []})
+    assert loglike({"data_file": "my_data.txt"}) == pytest.approx(reference)
+    assert loglike(
         {"data_file": "my_data_no_errors.txt", "covmat_file": "my_covmat.txt"}
     ) == pytest.approx(reference)
-    assert _cc_loglike(
+    assert loglike(
         {"data_file": "my_data.txt", "covmat_file": "my_covmat.txt", "systematics": []}
     ) == pytest.approx(reference_no_sys)
     # A full covariance matrix is used as given
@@ -160,7 +195,7 @@ def test_cc_own_data_and_covmat(tmp_path, monkeypatch):
     np.savetxt("my_full_covmat.txt", cov)
     H0, Omega_m = 70.0, 0.3
     residual = H - H0 * np.sqrt(Omega_m * (1 + z) ** 3 + 1 - Omega_m)
-    assert _cc_loglike(
+    assert loglike(
         {
             "data_file": "my_data.txt",
             "covmat_file": "my_full_covmat.txt",
@@ -170,7 +205,7 @@ def test_cc_own_data_and_covmat(tmp_path, monkeypatch):
     # Covariance matrix not matching the data
     np.savetxt("wrong_covmat.txt", np.diag(sigma[:-1] ** 2))
     with pytest.raises(LoggedError, match="shape"):
-        _cc_loglike({"data_file": "my_data.txt", "covmat_file": "wrong_covmat.txt"})
+        loglike({"data_file": "my_data.txt", "covmat_file": "wrong_covmat.txt"})
 
 
 def test_cc_cosmo_generator():
